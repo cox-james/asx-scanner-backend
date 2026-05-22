@@ -1,7 +1,7 @@
 import os
 import json
 import asyncio
-from datetime import datetime, time
+from datetime import datetime
 import anthropic
 import yfinance as yf
 from fastapi import FastAPI, HTTPException
@@ -38,180 +38,201 @@ ASX_STOCKS = [
     {"ticker": "TCL",  "yf": "TCL.AX",  "name": "Transurban",              "sector": "Infrastructure",   "us_revenue": 12, "description": "Toll roads, mostly Australian with some Virginia assets"},
 ]
 
-# US market tickers for overnight data
-US_TICKERS = {
-    "spy": "^GSPC",   # S&P 500
-    "qqq": "^IXIC",   # Nasdaq
-    "vix": "^VIX",    # VIX
-}
-
 # ── Live price fetching ────────────────────────────────────────────────────
-def fetch_live_prices() -> dict:
-    """Fetch today's % change for all ASX candidates + US overnight data."""
-    prices = {}
+def fetch_all_live_data() -> dict:
+    """Fetch today's % move for ASX stocks + US overnight data."""
+    asx_prices = {}
+    us_data = {}
 
-    # ASX stocks — today's % move
+    # ASX stocks
     asx_tickers = [s["yf"] for s in ASX_STOCKS if s["us_revenue"] < 15]
     try:
         data = yf.download(
             tickers=" ".join(asx_tickers),
-            period="2d",
-            interval="1d",
-            auto_adjust=True,
-            progress=False,
-            threads=True,
+            period="2d", interval="1d",
+            auto_adjust=True, progress=False, threads=True,
         )
         if not data.empty and "Close" in data.columns:
             close = data["Close"]
-            # Handle both single and multi-ticker responses
             if hasattr(close, "columns"):
                 for yf_ticker in asx_tickers:
                     try:
-                        col = close[yf_ticker]
-                        if len(col.dropna()) >= 2:
-                            prev, curr = float(col.dropna().iloc[-2]), float(col.dropna().iloc[-1])
-                            pct = round((curr - prev) / prev * 100, 2)
-                            # Map back to ASX ticker
-                            asx_t = yf_ticker.replace(".AX", "")
-                            prices[asx_t] = pct
+                        col = close[yf_ticker].dropna()
+                        if len(col) >= 2:
+                            prev, curr = float(col.iloc[-2]), float(col.iloc[-1])
+                            asx_prices[yf_ticker.replace(".AX","")] = round((curr-prev)/prev*100, 2)
                     except Exception:
                         pass
             else:
-                # Single ticker
-                col = close
-                if len(col.dropna()) >= 2:
-                    prev, curr = float(col.dropna().iloc[-2]), float(col.dropna().iloc[-1])
-                    pct = round((curr - prev) / prev * 100, 2)
-                    prices[asx_tickers[0].replace(".AX", "")] = pct
+                col = close.dropna()
+                if len(col) >= 2:
+                    prev, curr = float(col.iloc[-2]), float(col.iloc[-1])
+                    asx_prices[asx_tickers[0].replace(".AX","")] = round((curr-prev)/prev*100, 2)
     except Exception as e:
-        print(f"ASX price fetch error: {e}")
+        print(f"ASX fetch error: {e}")
 
-    # US overnight data
-    us_data = {}
-    try:
-        for key, ticker in US_TICKERS.items():
-            t = yf.Ticker(ticker)
-            hist = t.history(period="2d", interval="1d")
+    # US overnight: S&P, Nasdaq, VIX, 10Y yield, DXY
+    us_tickers = {
+        "spy": "^GSPC",
+        "qqq": "^IXIC",
+        "vix": "^VIX",
+        "dxy": "DX-Y.NYB",
+        "us10y": "^TNX",
+    }
+    for key, ticker in us_tickers.items():
+        try:
+            hist = yf.Ticker(ticker).history(period="2d", interval="1d")
             if len(hist) >= 2:
-                prev = float(hist["Close"].iloc[-2])
-                curr = float(hist["Close"].iloc[-1])
-                if key == "vix":
-                    us_data[key] = round(curr, 1)
+                prev, curr = float(hist["Close"].iloc[-2]), float(hist["Close"].iloc[-1])
+                if key in ("vix", "us10y", "dxy"):
+                    us_data[key] = round(curr, 2)
+                    us_data[key+"_chg"] = round(curr - prev, 2)
                 else:
-                    us_data[key] = round((curr - prev) / prev * 100, 2)
-    except Exception as e:
-        print(f"US data fetch error: {e}")
+                    us_data[key] = round((curr-prev)/prev*100, 2)
+                    us_data[key+"_price"] = round(curr, 2)
+        except Exception as e:
+            print(f"US ticker {ticker} error: {e}")
 
-    return {"asx": prices, "us": us_data}
+    return {"asx": asx_prices, "us": us_data}
 
 
-# ── Models ─────────────────────────────────────────────────────────────────
-class ScanRequest(BaseModel):
-    label: str
-    spy_move: float
-    qqq: float
-    vix: float
-    description: str
-    use_live_prices: bool = True   # fetch real ASX prices when True
+# ── Claude: interpret market conditions ───────────────────────────────────
+async def interpret_market(client: anthropic.AsyncAnthropic, us_data: dict) -> dict:
+    """Ask Claude to interpret the overnight data and identify the trigger."""
+    prompt = f"""Here is today's overnight US market data:
 
-class StockSignal(BaseModel):
-    ticker: str
-    name: str
-    sector: str
-    us_revenue: int
-    irrationality_score: int
-    actual_move: float | None       # real observed move today
-    estimated_move: float | None    # Claude's estimate if no live data
-    thesis: str
-    risk_flag: str
-    action: str
+S&P 500: {us_data.get('spy', 'N/A')}%
+Nasdaq: {us_data.get('qqq', 'N/A')}%
+VIX: {us_data.get('vix', 'N/A')} (change: {us_data.get('vix_chg', 'N/A')})
+US 10Y yield: {us_data.get('us10y', 'N/A')}% (change: {us_data.get('us10y_chg', 'N/A')})
+USD index (DXY): {us_data.get('dxy', 'N/A')} (change: {us_data.get('dxy_chg', 'N/A')})
 
-class MarketSnapshot(BaseModel):
-    spy_move: float | None
-    qqq: float | None
-    vix: float | None
-    source: str   # "live" or "user_provided"
+Based on these numbers, identify:
+1. The most likely trigger/narrative driving markets today
+2. Whether conditions warrant scanning for irrational ASX selloffs
+3. Which ASX sectors are most likely to be irrationally sold off given this trigger
 
-class ScanResponse(BaseModel):
-    signals: list[StockSignal]
-    scan_label: str
-    market: MarketSnapshot
-    candidates_scanned: int
-    prices_live: bool
-    fetched_at: str
-
-# ── Score a single stock ───────────────────────────────────────────────────
-async def score_stock(
-    client: anthropic.AsyncAnthropic,
-    market: ScanRequest,
-    stock: dict,
-    actual_move: float | None,
-) -> StockSignal | None:
-
-    market_is_down = market.spy_move < -0.5
-
-    if actual_move is not None:
-        move_context = f"The stock has actually moved {'+' if actual_move >= 0 else ''}{actual_move}% today on the ASX."
-    else:
-        move_context = "No live price data available — estimate likely move based on typical ASX beta."
-
-    prompt = f"""OVERNIGHT US MARKET:
-Trigger: {market.label}
-S&P 500: {market.spy_move}%  |  Nasdaq: {market.qqq}%  |  VIX: {market.vix}
-Context: {market.description}
-
-ASX STOCK: {stock['ticker']} — {stock['name']}
-Sector: {stock['sector']}  |  US Revenue: {stock['us_revenue']}%
-Business: {stock['description']}
-Live price move today: {move_context}
-
-How irrational is any selloff in this stock given the US trigger?
-Stocks with near-zero US revenue have no fundamental reason to sell on US-specific news — only ETF flow contagion applies.
-If the stock has actually moved, assess whether that real move is irrational given its fundamentals.
-{'' if market_is_down else 'NOTE: US market is not materially down — score conservatively.'}
-
-Reply ONLY with this JSON (no markdown, no extra text):
+Reply ONLY with this JSON:
 {{
-  "irrationalityScore": <integer 1-10; 10 = completely irrational selloff>,
-  "estimatedMove": <estimated % move if no live data, else null>,
-  "thesis": <one sentence: why this is a buying opportunity>,
-  "riskFlag": <one sentence: key reason the selloff might be partially rational>,
-  "action": <"STRONG BUY" | "BUY" | "WATCH" | "PASS">
+  "trigger": <short label e.g. "US tech selloff" or "Risk-off: VIX spike">,
+  "description": <one sentence explaining what drove markets>,
+  "market_is_actionable": <true if S&P is down more than 0.5%, else false>,
+  "most_exposed_sectors": <list of US sectors genuinely affected>,
+  "least_exposed_sectors": <list of ASX sectors with no real connection to trigger>
 }}"""
 
     try:
         response = await client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=512,
-            system="You are a senior ASX equity analyst specialising in ETF-driven mispricings. Reply with ONLY a raw JSON object — no markdown, no text outside the JSON.",
+            system="You are a senior market strategist. Reply with ONLY a raw JSON object — no markdown.",
             messages=[{"role": "user", "content": prompt}]
         )
         text = response.content[0].text
-        clean = text.replace("```json", "").replace("```", "").strip()
-        start, end = clean.index("{"), clean.rindex("}")
-        scored = json.loads(clean[start:end+1])
+        clean = text.replace("```json","").replace("```","").strip()
+        s, e = clean.index("{"), clean.rindex("}")
+        return json.loads(clean[s:e+1])
+    except Exception as ex:
+        print(f"Market interpretation error: {ex}")
+        spy = us_data.get("spy", 0) or 0
+        return {
+            "trigger": f"Market move (S&P {spy:+.1f}%)",
+            "description": "Automated market data — no narrative available.",
+            "market_is_actionable": spy < -0.5,
+            "most_exposed_sectors": [],
+            "least_exposed_sectors": [],
+        }
+
+
+# ── Score a single stock ───────────────────────────────────────────────────
+async def score_stock(
+    client: anthropic.AsyncAnthropic,
+    market_interp: dict,
+    us_data: dict,
+    stock: dict,
+    actual_move: float | None,
+) -> dict | None:
+
+    market_is_down = market_interp.get("market_is_actionable", False)
+
+    move_ctx = (
+        f"This stock has actually moved {'+' if actual_move >= 0 else ''}{actual_move}% today on the ASX."
+        if actual_move is not None
+        else "No live ASX price data — estimate likely move."
+    )
+
+    prompt = f"""LIVE MARKET CONDITIONS:
+Trigger: {market_interp['trigger']}
+Context: {market_interp['description']}
+S&P 500: {us_data.get('spy','N/A')}%  |  Nasdaq: {us_data.get('qqq','N/A')}%  |  VIX: {us_data.get('vix','N/A')}
+US 10Y yield: {us_data.get('us10y','N/A')}%  |  USD index: {us_data.get('dxy','N/A')}
+Sectors genuinely affected: {', '.join(market_interp.get('most_exposed_sectors', []))}
+
+ASX STOCK: {stock['ticker']} — {stock['name']}
+Sector: {stock['sector']}  |  US Revenue: {stock['us_revenue']}%
+Business: {stock['description']}
+Actual price move today: {move_ctx}
+
+Given the real market trigger above, how irrational is any selloff in this stock?
+A stock with near-zero US revenue being sold off purely due to ETF flows is irrational.
+If the stock has actually moved, assess whether that real move is justified by its fundamentals.
+{'' if market_is_down else 'NOTE: Market is not materially down — score conservatively.'}
+
+Reply ONLY with this JSON:
+{{
+  "irrationalityScore": <integer 1-10>,
+  "thesis": <one sentence: why this is a buying opportunity given today's specific trigger>,
+  "riskFlag": <one sentence: one genuine reason the selloff could be rational>,
+  "action": <"STRONG BUY" | "BUY" | "WATCH" | "PASS">
+}}"""
+
+    try:
+        response = await client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=400,
+            system="You are a senior ASX equity analyst. Reply with ONLY a raw JSON object — no markdown.",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        text = response.content[0].text
+        clean = text.replace("```json","").replace("```","").strip()
+        s, e = clean.index("{"), clean.rindex("}")
+        scored = json.loads(clean[s:e+1])
 
         if scored.get("irrationalityScore", 0) >= 6 and market_is_down:
-            return StockSignal(
-                ticker=stock["ticker"],
-                name=stock["name"],
-                sector=stock["sector"],
-                us_revenue=stock["us_revenue"],
-                irrationality_score=scored["irrationalityScore"],
-                actual_move=actual_move,
-                estimated_move=scored.get("estimatedMove") if actual_move is None else None,
-                thesis=scored.get("thesis", ""),
-                risk_flag=scored.get("riskFlag", ""),
-                action=scored.get("action", "WATCH"),
-            )
-    except Exception as e:
-        print(f"Error scoring {stock['ticker']}: {e}")
+            return {
+                "ticker": stock["ticker"],
+                "name": stock["name"],
+                "sector": stock["sector"],
+                "us_revenue": stock["us_revenue"],
+                "irrationality_score": scored["irrationalityScore"],
+                "actual_move": actual_move,
+                "thesis": scored.get("thesis", ""),
+                "risk_flag": scored.get("riskFlag", ""),
+                "action": scored.get("action", "WATCH"),
+            }
+    except Exception as ex:
+        print(f"Score error {stock['ticker']}: {ex}")
     return None
 
 
-# ── Endpoints ──────────────────────────────────────────────────────────────
+# ── Models ─────────────────────────────────────────────────────────────────
+class ScanResponse(BaseModel):
+    signals: list[dict]
+    trigger: str
+    description: str
+    spy_move: float | None
+    qqq: float | None
+    vix: float | None
+    us10y: float | None
+    dxy: float | None
+    prices_live: bool
+    candidates_scanned: int
+    fetched_at: str
+
+
+# ── Main scan endpoint ─────────────────────────────────────────────────────
 @app.post("/scan", response_model=ScanResponse)
-async def run_scan(req: ScanRequest):
+async def run_scan():
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY not set")
@@ -219,65 +240,48 @@ async def run_scan(req: ScanRequest):
     client = anthropic.AsyncAnthropic(api_key=api_key)
     candidates = [s for s in ASX_STOCKS if s["us_revenue"] < 15]
 
-    # Fetch live prices in a thread (yfinance is sync)
-    live_prices = {}
-    live_us = {}
-    prices_live = False
+    # Step 1: fetch all live data
+    loop = asyncio.get_event_loop()
+    price_data = await loop.run_in_executor(None, fetch_all_live_data)
+    asx_prices = price_data.get("asx", {})
+    us_data = price_data.get("us", {})
+    prices_live = bool(asx_prices)
+    print(f"Fetched {len(asx_prices)} ASX prices, US data keys: {list(us_data.keys())}")
 
-    if req.use_live_prices:
-        try:
-            loop = asyncio.get_event_loop()
-            price_data = await loop.run_in_executor(None, fetch_live_prices)
-            live_prices = price_data.get("asx", {})
-            live_us = price_data.get("us", {})
-            prices_live = bool(live_prices)
-            print(f"Live prices fetched: {len(live_prices)} stocks")
-        except Exception as e:
-            print(f"Live price fetch failed: {e}")
+    # Step 2: Claude interprets the market conditions
+    market_interp = await interpret_market(client, us_data)
+    print(f"Market: {market_interp.get('trigger')} — actionable: {market_interp.get('market_is_actionable')}")
 
-    # Use live US data if available and user didn't provide explicit scenario numbers
-    effective_spy = live_us.get("spy", req.spy_move) if live_us else req.spy_move
-    effective_qqq = live_us.get("qqq", req.qqq) if live_us else req.qqq
-    effective_vix = live_us.get("vix", req.vix) if live_us else req.vix
-
-    # Override request with live US data
-    req.spy_move = effective_spy
-    req.qqq = effective_qqq
-    req.vix = effective_vix
-
-    # Score all stocks concurrently
+    # Step 3: score each stock against real conditions
     semaphore = asyncio.Semaphore(3)
 
     async def score_with_limit(stock):
         async with semaphore:
-            actual_move = live_prices.get(stock["ticker"])
-            return await score_stock(client, req, stock, actual_move)
+            return await score_stock(client, market_interp, us_data, stock, asx_prices.get(stock["ticker"]))
 
     results = await asyncio.gather(*[score_with_limit(s) for s in candidates])
     signals = [r for r in results if r is not None]
-    signals.sort(key=lambda s: s.irrationality_score, reverse=True)
+    signals.sort(key=lambda s: s["irrationality_score"], reverse=True)
 
     return ScanResponse(
         signals=signals,
-        scan_label=req.label,
-        market=MarketSnapshot(
-            spy_move=effective_spy,
-            qqq=effective_qqq,
-            vix=effective_vix,
-            source="live" if live_us else "user_provided",
-        ),
-        candidates_scanned=len(candidates),
+        trigger=market_interp.get("trigger", "Unknown"),
+        description=market_interp.get("description", ""),
+        spy_move=us_data.get("spy"),
+        qqq=us_data.get("qqq"),
+        vix=us_data.get("vix"),
+        us10y=us_data.get("us10y"),
+        dxy=us_data.get("dxy"),
         prices_live=prices_live,
+        candidates_scanned=len(candidates),
         fetched_at=datetime.utcnow().isoformat() + "Z",
     )
 
 
 @app.get("/prices")
 async def get_prices():
-    """Standalone endpoint to check live price data."""
     loop = asyncio.get_event_loop()
-    data = await loop.run_in_executor(None, fetch_live_prices)
-    return data
+    return await loop.run_in_executor(None, fetch_all_live_data)
 
 
 @app.get("/health")
