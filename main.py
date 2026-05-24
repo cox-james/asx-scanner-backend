@@ -93,7 +93,7 @@ Reply ONLY with this JSON:
 {{
   "trigger": <short label>,
   "description": <one sentence explaining what drove markets>,
-  "market_is_actionable": <true if S&P is down more than 0.5 percent, else false>,
+  "market_is_actionable": <true if S&P is down more than 1.5 percent, else false>,
   "most_exposed_sectors": <list of US sectors genuinely affected>,
   "least_exposed_sectors": <list of ASX sectors with no real connection to trigger>
 }}"""
@@ -110,7 +110,7 @@ Reply ONLY with this JSON:
         print(f"Market interpretation error: {ex}")
         spy = us_data.get("spy", 0) or 0
         return {"trigger": f"S&P {spy:+.1f}%", "description": "Auto-derived",
-                "market_is_actionable": spy < -0.5,
+                "market_is_actionable": spy < -1.5,
                 "most_exposed_sectors": [], "least_exposed_sectors": []}
 
 
@@ -141,7 +141,9 @@ Reply ONLY with this JSON:
   "thesis": <one sentence — why this is a buying opportunity given today's trigger>,
   "riskFlag": <one sentence — one genuine reason the selloff could be rational>,
   "action": <"STRONG BUY" | "BUY" | "WATCH" | "PASS">
-}}"""
+}}
+
+Be conservative — only score 8+ if the selloff is clearly irrational given the trigger."""
 
     try:
         response = await client.messages.create(
@@ -153,7 +155,7 @@ Reply ONLY with this JSON:
         s, e = text.index("{"), text.rindex("}")
         scored = json.loads(text[s:e+1])
 
-        if scored.get("irrationalityScore", 0) >= 6 and market_is_down:
+        if scored.get("irrationalityScore", 0) >= 8 and market_is_down:
             return {
                 "ticker": stock["ticker"], "name": stock["name"], "sector": stock["sector"],
                 "us_revenue": stock["us_revenue"],
@@ -224,8 +226,8 @@ async def run_scan():
         prices_live=prices_live,
         candidates_scanned=len(candidates),
         fetched_at=datetime.utcnow().isoformat() + "Z",
-        entry_rule="Wait for Day 1 close (do NOT buy on signal day)",
-        holding_rule="Hold for ~10 trading days from Day 1 entry",
+        entry_rule="Enter at Day 1 close — do NOT buy on signal day (backtest: -0.14% Day 1, +1.88% Day 10)",
+        holding_rule="Hold minimum 5 days, target 10 days (5D: +0.97% / 60% win, 10D: +1.88% / 58% win)",
     )
 
 
