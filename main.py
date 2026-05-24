@@ -155,7 +155,7 @@ Be conservative — only score 8+ if the selloff is clearly irrational given the
         s, e = text.index("{"), text.rindex("}")
         scored = json.loads(text[s:e+1])
 
-        if scored.get("irrationalityScore", 0) >= 8 and market_is_down:
+        if scored.get("irrationalityScore", 0) >= 7 and market_is_down and (actual_move is None or actual_move < -0.3):
             return {
                 "ticker": stock["ticker"], "name": stock["name"], "sector": stock["sector"],
                 "us_revenue": stock["us_revenue"],
@@ -226,7 +226,7 @@ async def run_scan():
         prices_live=prices_live,
         candidates_scanned=len(candidates),
         fetched_at=datetime.utcnow().isoformat() + "Z",
-        entry_rule="Enter at Day 1 close — do NOT buy on signal day (backtest: -0.14% Day 1, +1.88% Day 10)",
+        entry_rule="Enter at Day 1 close — stock must be down 0.3%+ on signal day to qualify",
         holding_rule="Hold minimum 5 days, target 10 days (5D: +0.97% / 60% win, 10D: +1.88% / 58% win)",
     )
 
