@@ -18,18 +18,33 @@ app.add_middleware(
 )
 
 # ── Stock universe ─────────────────────────────────────────────────────────
-# Filtered to financials + insurance based on backtest evidence (Jan 2023 - Dec 2024).
-# These names consistently mean-revert after US-driven selloffs due to high
-# ETF weighting and retail flow exposure. Other low-US-revenue names (WOW, APA,
-# TCL, BHP) showed no tradeable edge in backtest.
+# Expanded universe across 5 sectors. Financials/insurance validated in 5yr backtest.
+# Resources, healthcare, REITs and utilities added as diversification — same ETF
+# flow inefficiency thesis, different sectors.
 ASX_STOCKS = [
-    {"ticker": "CBA",  "yf": "CBA.AX",  "name": "Commonwealth Bank",       "sector": "Financials", "us_revenue": 2, "description": "Australian retail bank, almost entirely domestic operations"},
-    {"ticker": "NAB",  "yf": "NAB.AX",  "name": "National Australia Bank", "sector": "Financials", "us_revenue": 3, "description": "Domestic bank with small offshore presence"},
-    {"ticker": "ANZ",  "yf": "ANZ.AX",  "name": "ANZ Banking Group",       "sector": "Financials", "us_revenue": 2, "description": "Asia-Pacific focused bank, minimal US exposure"},
-    {"ticker": "WBC",  "yf": "WBC.AX",  "name": "Westpac",                 "sector": "Financials", "us_revenue": 2, "description": "Australian retail and business bank"},
-    {"ticker": "MPL",  "yf": "MPL.AX",  "name": "Medibank",                "sector": "Insurance",  "us_revenue": 0, "description": "Australian private health insurer"},
-    {"ticker": "SUN",  "yf": "SUN.AX",  "name": "Suncorp",                 "sector": "Financials", "us_revenue": 0, "description": "Australian bank and insurer"},
-    {"ticker": "IAG",  "yf": "IAG.AX",  "name": "Insurance Australia",     "sector": "Insurance",  "us_revenue": 0, "description": "Australian general insurer, no US operations"},
+    # Financials & Insurance
+    {"ticker": "CBA",  "yf": "CBA.AX",  "name": "Commonwealth Bank",       "sector": "Financials",   "us_revenue": 2,  "description": "Australian retail bank, almost entirely domestic operations"},
+    {"ticker": "NAB",  "yf": "NAB.AX",  "name": "National Australia Bank", "sector": "Financials",   "us_revenue": 3,  "description": "Domestic bank with small offshore presence"},
+    {"ticker": "ANZ",  "yf": "ANZ.AX",  "name": "ANZ Banking Group",       "sector": "Financials",   "us_revenue": 2,  "description": "Asia-Pacific focused bank, minimal US exposure"},
+    {"ticker": "WBC",  "yf": "WBC.AX",  "name": "Westpac",                 "sector": "Financials",   "us_revenue": 2,  "description": "Australian retail and business bank"},
+    {"ticker": "MPL",  "yf": "MPL.AX",  "name": "Medibank",                "sector": "Insurance",    "us_revenue": 0,  "description": "Australian private health insurer"},
+    {"ticker": "SUN",  "yf": "SUN.AX",  "name": "Suncorp",                 "sector": "Financials",   "us_revenue": 0,  "description": "Australian bank and insurer"},
+    {"ticker": "IAG",  "yf": "IAG.AX",  "name": "Insurance Australia",     "sector": "Insurance",    "us_revenue": 0,  "description": "Australian general insurer, no US operations"},
+    # Resources — China revenue, zero US exposure, dragged by US ETF flows
+    {"ticker": "FMG",  "yf": "FMG.AX",  "name": "Fortescue",               "sector": "Materials",    "us_revenue": 0,  "description": "Iron ore miner, sells entirely to China — zero US revenue"},
+    {"ticker": "RIO",  "yf": "RIO.AX",  "name": "Rio Tinto",               "sector": "Materials",    "us_revenue": 4,  "description": "Global miner, primarily Asian commodity revenues"},
+    {"ticker": "MIN",  "yf": "MIN.AX",  "name": "Mineral Resources",       "sector": "Materials",    "us_revenue": 0,  "description": "Australian mining services and lithium, zero US revenue"},
+    # Healthcare — domestic hospitals and pathology, no US earnings exposure
+    {"ticker": "RHC",  "yf": "RHC.AX",  "name": "Ramsay Health Care",      "sector": "Healthcare",   "us_revenue": 0,  "description": "Australian private hospital operator, purely domestic earnings"},
+    {"ticker": "HLS",  "yf": "HLS.AX",  "name": "Healius",                 "sector": "Healthcare",   "us_revenue": 0,  "description": "Australian pathology and imaging, zero US exposure"},
+    {"ticker": "SHL",  "yf": "SHL.AX",  "name": "Sonic Healthcare",        "sector": "Healthcare",   "us_revenue": 28, "description": "Global pathology, significant US laboratory network"},
+    # REITs — domestic cash flows, sold off irrationally on US rate moves
+    {"ticker": "GMG",  "yf": "GMG.AX",  "name": "Goodman Group",           "sector": "REITs",        "us_revenue": 8,  "description": "Industrial REIT, global logistics properties, locked-in funding costs"},
+    {"ticker": "SCG",  "yf": "SCG.AX",  "name": "Scentre Group",           "sector": "REITs",        "us_revenue": 0,  "description": "Australian Westfield shopping centres, zero US exposure"},
+    {"ticker": "CHC",  "yf": "CHC.AX",  "name": "Charter Hall",            "sector": "REITs",        "us_revenue": 0,  "description": "Australian commercial property fund manager, domestic focus"},
+    # Utilities & Infrastructure — regulated domestic cash flows
+    {"ticker": "APA",  "yf": "APA.AX",  "name": "APA Group",               "sector": "Utilities",    "us_revenue": 0,  "description": "Australian gas pipelines, government-regulated, purely domestic"},
+    {"ticker": "TCL",  "yf": "TCL.AX",  "name": "Transurban",              "sector": "Infrastructure","us_revenue": 12, "description": "Toll roads, mostly Australian with some Virginia assets"},
 ]
 
 # ── Live price fetching ────────────────────────────────────────────────────
